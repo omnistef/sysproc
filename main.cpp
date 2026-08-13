@@ -9,9 +9,33 @@
 #include <csignal>
 #include <thread>
 #include <chrono>
-
+#include <termios.h>
+#include <unistd.h>
+#include <sys/select.h>
 using namespace std;
 
+void set_terminal_raw_mode(bool enable) {
+    static struct termios oldt, newt;
+
+    if (enable) {
+        tcgetattr(STDIN_FILENO, &oldt);
+        newt = oldt;
+        newt.c_lflag &= ~(ICANON | ECHO);
+        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    } else {
+        tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    }
+}
+
+bool kbhit() {
+    timeval tv = {0, 0};
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
+}
+    
+//structs
 struct Process {
     int pid;
     string name;
@@ -22,6 +46,7 @@ struct RamInfo {
     long total_kb;
     long available_kb;
 };
+//structs
 
 bool number(const string& s) {
     if(s.empty())
@@ -33,8 +58,6 @@ bool number(const string& s) {
     }
     return true;
 }
-
-
 
 string process_name(int pid) {
      string path = "/proc/" + to_string(pid) + "/comm";
@@ -125,47 +148,79 @@ string progress_bar(double percent, int width = 15) {
 int main() {
     ios::sync_with_stdio(false);
 
-    while(true) {
+    set_terminal_raw_mode(true);
 
-       cout << "\033[2J\033[3J\033[H";
+    size_t scroll_offset = 0;    
+    const size_t max_visible = 15; 
+
+    bool running = true;
+    while(running) {
+
+        if (kbhit()) {
+            char c = getchar();
+            if (c == '\033') {  
+                getchar();     
+                char arrow = getchar();
+                
+                if (arrow == 'B') { 
+                    scroll_offset++;
+                } else if (arrow == 'A') { 
+                    if (scroll_offset > 0) {
+                        scroll_offset--;
+                    }
+                }
+            } else if (c == 'q' || c == 'Q') { 
+                running = false;
+            }
+        }
+
+        cout << "\033[2J\033[3J\033[H";
         
-       RamInfo ram = system_ram();
-       long used_kb = ram.total_kb - ram.available_kb;
-       double used_gb = used_kb / 1048576.0;
-       double total_gb = ram.total_kb / 1048576.0;
-       double used_percentage = ((double)used_kb / ram.total_kb) * 100.0;
+        RamInfo ram = system_ram();
+        long used_kb = ram.total_kb - ram.available_kb;
+        double used_gb = used_kb / 1048576.0;
+        double total_gb = ram.total_kb / 1048576.0;
+        double used_percentage = ((double)used_kb / ram.total_kb) * 100.0;
 
-       vector<Process> active_pids = all_pids();
+        vector<Process> active_pids = all_pids();
 
         sort(active_pids.begin(), active_pids.end(), [](const Process& a, const Process& b) {
             return a.ram_kb > b.ram_kb;
         });
 
+        if (scroll_offset >= active_pids.size()) {
+            scroll_offset = active_pids.size() > 0 ? active_pids.size() - 1 : 0;
+        }
+
         cout << fixed << setprecision(2);
         cout << "======================================================\n";
         cout << "RAM Used: " << progress_bar(used_percentage) << " " << used_gb << " GB / " << total_gb << " GB (" << used_percentage << "%)\n"; 
-        cout << "Found " << active_pids.size() << " active processes on the current system.\n";
+        cout << "Found " << active_pids.size() << " active processes. [Use UP/DOWN arrows, 'q' to quit]\n";
         cout << "======================================================\n\n";
-        cout << "Here are your current active processes!\n";
+        cout << "Your active processes:\n";
         cout << "------------------------------------------------------\n";
         cout << left << setw(10) << "PID"
              << setw(18) << "RAM (MB)"
              << "PROCESS NAME\n";
         cout << "------------------------------------------------------\n";
 
-        size_t limit = min((size_t)15, active_pids.size());
+        size_t end_index = min(scroll_offset + max_visible, active_pids.size());
         
-        for(size_t i = 0; i < limit; i++) {
+        for(size_t i = scroll_offset; i < end_index; i++) {
             double ram_mb = active_pids[i].ram_kb / 1024.0;
-            cout << left << setw(10) << active_pids[i].pid << setw(18) << ram_mb << active_pids[i].name << "\n";
+            cout << left << setw(10) << active_pids[i].pid 
+                 << setw(18) << ram_mb 
+                 << active_pids[i].name << "\n";
         }
 
-
         cout << "------------------------------------------------------\n";
+        cout << " Displaying " << (active_pids.empty() ? 0 : scroll_offset + 1) 
+             << "-" << end_index << " of " << active_pids.size() << "\n";
         cout.flush();
 
-        this_thread::sleep_for(chrono::seconds(1));
+        this_thread::sleep_for(chrono::milliseconds(100));
     }
 
+    set_terminal_raw_mode(false);
     return 0;
 }
