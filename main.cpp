@@ -21,8 +21,6 @@ struct Process {
 struct RamInfo {
     long total_kb;
     long available_kb;
-    long used_kb;
-    double used_percent;
 };
 
 bool number(const string& s) {
@@ -36,32 +34,7 @@ bool number(const string& s) {
     return true;
 }
 
-RamInfo get_system_ram() {
-    ifstream file("/proc/meminfo");
-    string line;
-    long total = 0;
-    long available = 0;
 
-    if (file.is_open()) {
-        while (getline(file, line)) {
-            stringstream ss(line);
-            string key;
-            long value;
-
-            // Extragere simplă: primul cuvânt e cheia (ex: "MemTotal:"), al doilea e valoarea
-            ss >> key >> value;
-
-            if (key == "MemTotal:") {
-                total = value;
-            } 
-            else if (key == "MemAvailable:") {
-                available = value;
-            }
-        }
-    }
-
-    return {total, available};
-}
 
 string process_name(int pid) {
      string path = "/proc/" + to_string(pid) + "/comm";
@@ -71,6 +44,31 @@ string process_name(int pid) {
          getline(file, name);
      }
      return name;
+}
+
+RamInfo system_ram() {
+    ifstream file("/proc/meminfo");
+    string line;
+    long total = 0;
+    long available = 0;
+
+    if(file.is_open()) {
+        while(getline(file, line)) {
+            stringstream ss(line);
+            string key;
+            long value;
+
+            ss >> key >> value;
+
+            if(key == "MemTotal:") {
+                total = value;
+            } else if(key == "MemAvailable:") {
+                available = value;                
+            }
+
+        }
+    }
+    return {total, available};
 }
 
 long process_ram(int pid) {
@@ -109,12 +107,16 @@ vector<Process> all_pids() {
     return pids;
 }
 
-string draw_progress_bar(double percent) {
-    int filled = (percent / 100.0) * 15;
+string progress_bar(double percent, int width = 15) {
+    int filled = (percent / 100.0) * width;
+
     string bar = "[";
-    for (int i = 0; i < 15; i++) {
-        if (i < filled) bar += "=";
-        else bar += ".";
+    for(int i = 0; i < width; i++) {
+        if(i < filled) {
+            bar += "=";
+        } else {
+            bar += ".";
+        }
     }
     bar += "]";
     return bar;
@@ -125,13 +127,15 @@ int main() {
 
     while(true) {
 
-        cout << "\033[2J\033[3J\033[H";
+       cout << "\033[2J\033[3J\033[H";
+        
+       RamInfo ram = system_ram();
+       long used_kb = ram.total_kb - ram.available_kb;
+       double used_gb = used_kb / 1048576.0;
+       double total_gb = ram.total_kb / 1048576.0;
+       double used_percentage = ((double)used_kb / ram.total_kb) * 100.0;
 
-        RamInfo ram = get_system_ram();
-        double total_gb = ram.total_kb / 1048576.0;
-        double used_gb = ram.used_kb / 1048576.0;
-
-        vector<Process> active_pids = all_pids();
+       vector<Process> active_pids = all_pids();
 
         sort(active_pids.begin(), active_pids.end(), [](const Process& a, const Process& b) {
             return a.ram_kb > b.ram_kb;
@@ -139,11 +143,10 @@ int main() {
 
         cout << fixed << setprecision(2);
         cout << "======================================================\n";
-        cout << " RAM Used: " << draw_progress_bar(ram.used_percent) << " "
-             << used_gb << " GB / " << total_gb << " GB (" << ram.used_percent << "%)\n";
-        cout << " Found " << active_pids.size() << " active processes on the current system.\n";
+        cout << "RAM Used: " << progress_bar(used_percentage) << " " << used_gb << " GB / " << total_gb << " GB (" << used_percentage << "%)\n"; 
+        cout << "Found " << active_pids.size() << " active processes on the current system.\n";
         cout << "======================================================\n\n";
-
+        cout << "Here are your current active processes!\n";
         cout << "------------------------------------------------------\n";
         cout << left << setw(10) << "PID"
              << setw(18) << "RAM (MB)"
@@ -151,14 +154,12 @@ int main() {
         cout << "------------------------------------------------------\n";
 
         size_t limit = min((size_t)15, active_pids.size());
-
+        
         for(size_t i = 0; i < limit; i++) {
             double ram_mb = active_pids[i].ram_kb / 1024.0;
-
-            cout << left << setw(10) << active_pids[i].pid
-                 << setw(18) << ram_mb
-                 << active_pids[i].name << "\n";
+            cout << left << setw(10) << active_pids[i].pid << setw(18) << ram_mb << active_pids[i].name << "\n";
         }
+
 
         cout << "------------------------------------------------------\n";
         cout.flush();
