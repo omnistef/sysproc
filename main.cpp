@@ -7,6 +7,8 @@
 #include <vector>
 #include <algorithm>
 #include <csignal>
+#include <thread>
+#include <chrono>
 
 using namespace std;
 
@@ -14,6 +16,13 @@ struct Process {
     int pid;
     string name;
     long ram_kb;
+};
+
+struct RamInfo {
+    long total_kb;
+    long available_kb;
+    long used_kb;
+    double used_percent;
 };
 
 bool number(const string& s) {
@@ -25,6 +34,33 @@ bool number(const string& s) {
         }
     }
     return true;
+}
+
+RamInfo get_system_ram() {
+    ifstream file("/proc/meminfo");
+    string line;
+    long total = 0;
+    long available = 0;
+
+    if (file.is_open()) {
+        while (getline(file, line)) {
+            stringstream ss(line);
+            string key;
+            long value;
+
+            // Extragere simplă: primul cuvânt e cheia (ex: "MemTotal:"), al doilea e valoarea
+            ss >> key >> value;
+
+            if (key == "MemTotal:") {
+                total = value;
+            } 
+            else if (key == "MemAvailable:") {
+                available = value;
+            }
+        }
+    }
+
+    return {total, available};
 }
 
 string process_name(int pid) {
@@ -73,28 +109,62 @@ vector<Process> all_pids() {
     return pids;
 }
 
+string draw_progress_bar(double percent) {
+    int filled = (percent / 100.0) * 15;
+    string bar = "[";
+    for (int i = 0; i < 15; i++) {
+        if (i < filled) bar += "=";
+        else bar += ".";
+    }
+    bar += "]";
+    return bar;
+}
 
 int main() {
     ios::sync_with_stdio(false);
-    cout << "scanning /proc for PIDS...\n";
-    vector<Process> active_pids = all_pids();
-    sort(active_pids.begin(), active_pids.end(), [](const Process& a, const Process& b) {
-        return a.ram_kb > b.ram_kb;
-    });
-    cout << "Found " << active_pids.size() << " active processes on the current system.\n\n";
 
-    cout << "------------------------------------------------------\n";
-    cout << "PID\t\tRAM (MB)\t\tPROCESS NAME\n";
-    cout << "------------------------------------------------------\n";
+    while(true) {
 
-    cout << fixed << setprecision(2);
+        cout << "\033[2J\033[3J\033[H";
 
-    for(size_t i = 0; i < active_pids.size(); i++) {
-        double ram_mb = active_pids[i].ram_kb / 1024.0;
+        RamInfo ram = get_system_ram();
+        double total_gb = ram.total_kb / 1048576.0;
+        double used_gb = ram.used_kb / 1048576.0;
 
-        cout << active_pids[i].pid << "\t\t" << ram_mb << "MB\t\t" << active_pids[i].name << "\n";
+        vector<Process> active_pids = all_pids();
+
+        sort(active_pids.begin(), active_pids.end(), [](const Process& a, const Process& b) {
+            return a.ram_kb > b.ram_kb;
+        });
+
+        cout << fixed << setprecision(2);
+        cout << "======================================================\n";
+        cout << " RAM Used: " << draw_progress_bar(ram.used_percent) << " "
+             << used_gb << " GB / " << total_gb << " GB (" << ram.used_percent << "%)\n";
+        cout << " Found " << active_pids.size() << " active processes on the current system.\n";
+        cout << "======================================================\n\n";
+
+        cout << "------------------------------------------------------\n";
+        cout << left << setw(10) << "PID"
+             << setw(18) << "RAM (MB)"
+             << "PROCESS NAME\n";
+        cout << "------------------------------------------------------\n";
+
+        size_t limit = min((size_t)15, active_pids.size());
+
+        for(size_t i = 0; i < limit; i++) {
+            double ram_mb = active_pids[i].ram_kb / 1024.0;
+
+            cout << left << setw(10) << active_pids[i].pid
+                 << setw(18) << ram_mb
+                 << active_pids[i].name << "\n";
+        }
+
+        cout << "------------------------------------------------------\n";
+        cout.flush();
+
+        this_thread::sleep_for(chrono::seconds(1));
     }
 
     return 0;
-
 }
