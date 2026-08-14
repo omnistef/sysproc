@@ -9,12 +9,12 @@
 #include <csignal>
 #include <thread>
 #include <chrono>
+#include <iomanip> 
 #include <termios.h>
 #include <unistd.h>
 #include <sys/select.h>
 using namespace std;
 
-//terminal setting
 void set_terminal_raw_mode(bool enable) {
     static struct termios oldt, newt;
 
@@ -35,20 +35,25 @@ bool kbhit() {
     FD_SET(STDIN_FILENO, &fds);
     return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
 }
-//terminal setting
-    
+
 //structs
 struct Process {
     int pid;
     string name;
     long ram_kb;
+    char state;
+};
+
+struct proc_stats {
+    int running = 0;
+    int sleeping = 0;
+    int zombie = 0;
 };
 
 struct RamInfo {
     long total_kb;
     long available_kb;
 };
-//structs
 
 bool number(const string& s) {
     if(s.empty())
@@ -62,13 +67,13 @@ bool number(const string& s) {
 }
 
 string process_name(int pid) {
-     string path = "/proc/" + to_string(pid) + "/comm";
-     ifstream file(path);
-     string name = "N/A";
-     if(file.is_open()) {
-         getline(file, name);
-     }
-     return name;
+    string path = "/proc/" + to_string(pid) + "/comm";
+    ifstream file(path);
+    string name = "N/A";
+    if(file.is_open()) {
+        getline(file, name);
+    }
+    return name;
 }
 
 RamInfo system_ram() {
@@ -90,7 +95,6 @@ RamInfo system_ram() {
             } else if(key == "MemAvailable:") {
                 available = value;                
             }
-
         }
     }
     return {total, available};
@@ -106,7 +110,6 @@ void read_cpu(long &total_out, long &idle_out) {
     
     idle_out = idle_val + iowait;
     total_out = user + nice + system + idle_out + iowait + irq + softirq + steal;
-
 }
 
 double calculate_cpu() {
@@ -133,30 +136,43 @@ double calculate_cpu() {
     if (delta_total == 0) return 0.0;
 
     return (double)(delta_total - delta_idle) / delta_total * 100.0;    
-
 }
 
-long process_ram(int pid) {
+long process_ram(int pid, proc_stats &stats, char &proc_state) {
     string path = "/proc/" + to_string(pid) + "/status";
     ifstream file(path);
     string line;
-
+    long ram_kb = 0; 
+    proc_state = '?';
+    
     if(file.is_open()) {
         while(getline(file, line)) {
-            if(line.rfind("VmRSS:" , 0) == 0) {
+            if(line.rfind("State:", 0) == 0) {
+                size_t pos = line.find_first_not_of(" \t", 6);
+                if(pos != string::npos) {
+                    proc_state = line[pos];
+                    
+                    if (proc_state == 'R') {
+                        stats.running++;
+                    } else if (proc_state == 'S' || proc_state == 'I' || proc_state == 'D') {
+                        stats.sleeping++;
+                    } else if (proc_state == 'Z') {
+                        stats.zombie++;
+                    }
+                }
+            }
+            
+            if(line.rfind("VmRSS:", 0) == 0) {
                 stringstream ss(line);
                 string label;
-                long ram_kb = 0;
                 ss >> label >> ram_kb;
-                return ram_kb;
             }
         }
     }
-    return 0;
+    return ram_kb;
 }
 
-
-vector<Process> all_pids() {
+vector<Process> all_pids(proc_stats &stats) {
     vector<Process> pids;
     for(const auto& entry : filesystem::directory_iterator("/proc")) {
         if(entry.is_directory()) {
@@ -164,8 +180,9 @@ vector<Process> all_pids() {
             if(number(folder)) {
                 int pid = stoi(folder);
                 string name = process_name(pid);
-                long ram = process_ram(pid);
-                pids.push_back({pid, name, ram});
+                char state = '?';
+                long ram = process_ram(pid, stats, state);
+                pids.push_back({pid, name, ram, state}); 
             }
         }
     }
@@ -226,7 +243,8 @@ int main() {
         double total_gb = ram.total_kb / 1048576.0;
         double used_percentage = ((double)used_kb / ram.total_kb) * 100.0;
 
-        vector<Process> active_pids = all_pids();
+        proc_stats stats; 
+        vector<Process> active_pids = all_pids(stats);
 
         sort(active_pids.begin(), active_pids.end(), [](const Process& a, const Process& b) {
             return a.ram_kb > b.ram_kb;
@@ -240,13 +258,11 @@ int main() {
         cout << "======================================================\n";
         cout << "CPU Usage : " << progress_bar(cpu_usage) << " " << cpu_usage << "%\n"; 
         cout << "RAM Usage : " << progress_bar(used_percentage) << " " << used_gb << " GB / " << total_gb << " GB (" << used_percentage << "%)\n"; 
-        cout << "Found " << active_pids.size() << " active processes. [Use UP/DOWN arrows, 'q' to quit]\n";
+        cout << "Tasks: " << active_pids.size() << " total | " << stats.running << " running | " << stats.sleeping << " sleeping | " << stats.zombie << " zombie\n";
         cout << "======================================================\n\n";
         cout << "Your active processes:\n";
         cout << "------------------------------------------------------\n";
-        cout << left << setw(10) << "PID"
-             << setw(18) << "RAM (MB)"
-             << "PROCESS NAME\n";
+        cout << left << setw(10) << "PID" << setw(6) << "S" << setw(18) << "RAM (MB)" << "PROCESS NAME\n";
         cout << "------------------------------------------------------\n";
 
         size_t end_index = min(scroll_offset + max_visible, active_pids.size());
@@ -254,10 +270,10 @@ int main() {
         for(size_t i = scroll_offset; i < end_index; i++) {
             double ram_mb = active_pids[i].ram_kb / 1024.0;
             cout << left << setw(10) << active_pids[i].pid 
+                 << setw(6) << active_pids[i].state 
                  << setw(18) << ram_mb 
                  << active_pids[i].name << "\n";
         }
-
         cout << "------------------------------------------------------\n";
         cout << " Displaying " << (active_pids.empty() ? 0 : scroll_offset + 1) 
              << "-" << end_index << " of " << active_pids.size() << "\n";
