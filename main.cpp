@@ -14,6 +14,7 @@
 #include <sys/select.h>
 using namespace std;
 
+//terminal setting
 void set_terminal_raw_mode(bool enable) {
     static struct termios oldt, newt;
 
@@ -34,6 +35,7 @@ bool kbhit() {
     FD_SET(STDIN_FILENO, &fds);
     return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
 }
+//terminal setting
     
 //structs
 struct Process {
@@ -92,6 +94,46 @@ RamInfo system_ram() {
         }
     }
     return {total, available};
+}
+
+void read_cpu(long &total_out, long &idle_out) {
+    ifstream file("/proc/stat");
+    string line;
+
+    long user, nice, system, idle_val, iowait, irq, softirq, steal;
+
+    file >> line >> user >> nice >> system >> idle_val >> iowait >> irq >> softirq >> steal;
+    
+    idle_out = idle_val + iowait;
+    total_out = user + nice + system + idle_out + iowait + irq + softirq + steal;
+
+}
+
+double calculate_cpu() {
+    static long prev_total = 0;
+    static long prev_idle = 0;
+    
+    long curr_total = 0;
+    long curr_idle = 0;
+
+    read_cpu(curr_total, curr_idle);
+
+    if (prev_total == 0) {
+        prev_total = curr_total;
+        prev_idle = curr_idle;
+        return 0.0;
+    }
+
+    long delta_total = curr_total - prev_total;
+    long delta_idle  = curr_idle - prev_idle;
+
+    prev_total = curr_total;
+    prev_idle = curr_idle;
+
+    if (delta_total == 0) return 0.0;
+
+    return (double)(delta_total - delta_idle) / delta_total * 100.0;    
+
 }
 
 long process_ram(int pid) {
@@ -173,6 +215,8 @@ int main() {
                 running = false;
             }
         }
+        
+        double cpu_usage = calculate_cpu();
 
         cout << "\033[2J\033[3J\033[H";
         
@@ -194,7 +238,8 @@ int main() {
 
         cout << fixed << setprecision(2);
         cout << "======================================================\n";
-        cout << "RAM Used: " << progress_bar(used_percentage) << " " << used_gb << " GB / " << total_gb << " GB (" << used_percentage << "%)\n"; 
+        cout << "CPU Usage : " << progress_bar(cpu_usage) << " " << cpu_usage << "%\n"; 
+        cout << "RAM Usage : " << progress_bar(used_percentage) << " " << used_gb << " GB / " << total_gb << " GB (" << used_percentage << "%)\n"; 
         cout << "Found " << active_pids.size() << " active processes. [Use UP/DOWN arrows, 'q' to quit]\n";
         cout << "======================================================\n\n";
         cout << "Your active processes:\n";
@@ -218,7 +263,7 @@ int main() {
              << "-" << end_index << " of " << active_pids.size() << "\n";
         cout.flush();
 
-        this_thread::sleep_for(chrono::milliseconds(100));
+        this_thread::sleep_for(chrono::milliseconds(50));
     }
 
     set_terminal_raw_mode(false);
